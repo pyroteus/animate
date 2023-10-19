@@ -18,6 +18,7 @@ on:
 jobs:
   docker_workflow:
     name: 'Build the firedrake-parmmg container'
+    runs-on: ubuntu-latest
     if: ${{ inputs.status == 'success' }}
     steps:
 

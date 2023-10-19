@@ -1,7 +1,6 @@
 name: Build Animate
 
 on:
-  # Push to main or PR
   push:
     branches:
       - main
@@ -10,9 +9,7 @@ on:
 jobs:
   build:
     name: "Build Animate"
-    # The type of runner that the job will run on
     runs-on: ubuntu-latest
-    # The docker container to use.
     container:
       image: jwallwork/firedrake-parmmg:latest
       options: --user root
