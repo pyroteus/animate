@@ -43,9 +43,8 @@ jobs:
       - name: 'Test Animate'
         run: |
           . /home/firedrake/firedrake/bin/activate
-          python -m pip uninstall -y animate
-          python -m pip install -r requirements.txt
-          python -m pip install -e .
+          python $(which firedrake-clean)
+          python -m pytest -v -n auto test/test_math.py
 
   docker:
     name: 'Build Docker container'
