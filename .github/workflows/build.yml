@@ -48,7 +48,7 @@ jobs:
 
   docker:
     name: 'Build Docker container'
-    if: ${{ (github.ref == 'refs/heads/main') && always() }}
+    # if: ${{ (github.ref == 'refs/heads/main') && always() }}
     needs: [build]
     uses: ./.github/workflows/docker.yml
     with:
