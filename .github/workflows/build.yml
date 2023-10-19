@@ -45,3 +45,12 @@ jobs:
         run: |
           . /home/firedrake/firedrake/bin/activate
           flake8 --ignore=E501,E226,E402,E741,F403,F405,W503
+
+  docker:
+    name: "Build Docker container"
+    if: ${{ (github.ref == 'refs/heads/main') && always() }}
+    needs: [build]
+    uses: ./.github/workflows/docker.yml
+    with:
+      status: ${{ needs.build.result }}
+    secrets: inherit
