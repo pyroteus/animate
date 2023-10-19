@@ -1,23 +1,19 @@
 name: Build and push firedrake-parmmg Docker image to DockerHub
 
 on:
-  # Push to main or PR
-  push:
-    branches:
-      - main
-  pull_request:
+  workflow_call:
 
-  inputs:
-    status:
-      description: 'Animate test status'
-      required: true
-      type: string
+    inputs:
+      status:
+        description: 'Animate test status'
+        required: true
+        type: string
 
-  secrets:
-    DOCKERHUB_USER:
-      required: true
-    DOCKERHUB_TOKEN:
-      required: true
+    secrets:
+      DOCKERHUB_USER:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
 
 jobs:
   docker_workflow:
