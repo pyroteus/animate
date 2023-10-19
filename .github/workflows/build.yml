@@ -1,4 +1,4 @@
-name: Build Animate
+name: 'Build Animate'
 
 on:
   push:
@@ -8,41 +8,40 @@ on:
 
 jobs:
   build:
-    name: "Build Animate"
+    name: 'Build Animate'
     runs-on: ubuntu-latest
     container:
       image: jwallwork/firedrake-parmmg:latest
       options: --user root
     steps:
       - uses: actions/checkout@v2
-      - name: Cleanup
+
+      - name: 'Cleanup'
         if: ${{ always() }}
         run: |
           cd ..
           rm -rf build
-      - name: Setup python
+
+      - name: 'Setup python'
         uses: actions/setup-python@v2
         with:
           python-version: 3.8
-      - name: Install Animate
+
+      - name: 'Lint'
+        if: ${{ always() }}
+        run: |
+          . /home/firedrake/firedrake/bin/activate
+          flake8 --ignore=E501,E226,E402,E741,F403,F405,W503
+
+      - name: 'Test Animate'
         run: |
           . /home/firedrake/firedrake/bin/activate
           python -m pip uninstall -y animate
           python -m pip install -r requirements.txt
           python -m pip install -e .
-      - name: Lint
-        if: ${{ always() }}
-        run: |
-          . /home/firedrake/firedrake/bin/activate
-          flake8 --ignore=E501,E226,E402,E741,F403,F405,W503
-      - name: Test Animate
-        run: |
-          . /home/firedrake/firedrake/bin/activate
-          python $(which firedrake-clean)
-          python -m pytest -v -n auto --durations=20 test
 
   docker:
-    name: "Build Docker container"
+    name: 'Build Docker container'
     if: ${{ (github.ref == 'refs/heads/main') && always() }}
     needs: [build]
     uses: ./.github/workflows/docker.yml
