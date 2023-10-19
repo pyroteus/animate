@@ -6,6 +6,13 @@ on:
       - main
   pull_request:
 
+concurrency:
+  # Cancel jobs running if new commits are pushed
+  group: >
+    ${{ github.workflow }}-
+    ${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: 'Build Animate'
