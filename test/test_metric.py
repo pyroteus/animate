@@ -674,8 +674,17 @@ class TestEnforceSPD(MetricTestCase):
         expected = RiemannianMetric(P1_ten).interpolate(transpose(metric))
         self.assertAlmostMatching(metric, expected)
 
-    @parameterized.expand([[2], [3]])
-    def test_enforce_h_min(self, dim):
+    @parameterized.expand(
+        [
+            (2, False, None),
+            (2, True, None),
+            (2, True, 1),
+            (3, False, None),
+            (3, True, None),
+            (3, True, 1),
+        ]
+    )
+    def test_enforce_h_min(self, dim, variable, boundary_tag):
         """
         Check that the minimum magnitude is correctly applied:
             h_min > h => h := h_min
@@ -684,13 +693,30 @@ class TestEnforceSPD(MetricTestCase):
         h = 0.1
         metric = uniform_metric(mesh, a=1 / h**2)
         h_min = 0.2
-        metric.set_parameters({"dm_plex_metric_h_min": h_min})
-        metric.enforce_spd(restrict_sizes=True, restrict_anisotropy=False)
-        expected = uniform_metric(mesh, a=1 / h_min**2)
+        if variable:
+            metric.enforce_variable_constraints(h_min=h_min, boundary_tag=boundary_tag)
+        else:
+            metric.set_parameters({"dm_plex_metric_h_min": h_min})
+            metric.enforce_spd(restrict_sizes=True, restrict_anisotropy=False)
+        if boundary_tag is None:
+            expected = uniform_metric(mesh, a=1 / h_min**2)
+        else:
+            expected = uniform_metric(mesh, a=1 / h**2)
+            bnodes = DirichletBC(expected.function_space(), 0, 1).nodes
+            expected.dat.data[bnodes] = np.eye(dim) / h_min**2
         self.assertAlmostMatching(metric, expected)
 
-    @parameterized.expand([[2], [3]])
-    def test_enforce_h_max(self, dim):
+    @parameterized.expand(
+        [
+            (2, False, None),
+            (2, True, None),
+            (2, True, 1),
+            (3, False, None),
+            (3, True, None),
+            (3, True, 1),
+        ]
+    )
+    def test_enforce_h_max(self, dim, variable, boundary_tag):
         """
         Check that the minimum magnitude is correctly applied:
             h_max < h => h := h_max
@@ -699,13 +725,30 @@ class TestEnforceSPD(MetricTestCase):
         h = 0.1
         metric = uniform_metric(mesh, a=1 / h**2)
         h_max = 0.05
-        metric.set_parameters({"dm_plex_metric_h_max": h_max})
-        metric.enforce_spd(restrict_sizes=True, restrict_anisotropy=False)
-        expected = uniform_metric(mesh, a=1 / h_max**2)
+        if variable:
+            metric.enforce_variable_constraints(h_max=h_max, boundary_tag=boundary_tag)
+        else:
+            metric.set_parameters({"dm_plex_metric_h_max": h_max})
+            metric.enforce_spd(restrict_sizes=True, restrict_anisotropy=False)
+        if boundary_tag is None:
+            expected = uniform_metric(mesh, a=1 / h_max**2)
+        else:
+            expected = uniform_metric(mesh, a=1 / h**2)
+            bnodes = DirichletBC(expected.function_space(), 0, 1).nodes
+            expected.dat.data[bnodes] = np.eye(dim) / h_max**2
         self.assertAlmostMatching(metric, expected)
 
-    @parameterized.expand([[2], [3]])
-    def test_enforce_a_max(self, dim):
+    @parameterized.expand(
+        [
+            (2, False, None),
+            (2, True, None),
+            (2, True, 1),
+            (3, False, None),
+            (3, True, None),
+            (3, True, 1),
+        ]
+    )
+    def test_enforce_a_max(self, dim, variable, boundary_tag):
         """
         Check that the maximum anisotropy is correctly applied:
             a_max < a => a := a_max
@@ -716,9 +759,17 @@ class TestEnforceSPD(MetricTestCase):
         M = np.eye(dim)
         M[0][0] = 10.0
         metric.interpolate(as_matrix(M))
-        metric.set_parameters({"dm_plex_metric_a_max": 1.0})
-        metric.enforce_spd(restrict_sizes=False, restrict_anisotropy=True)
-        expected = uniform_metric(mesh, a=10.0)
+        a_max = 1.0
+        if variable:
+            metric.enforce_variable_constraints(a_max=a_max, boundary_tag=boundary_tag)
+        else:
+            metric.set_parameters({"dm_plex_metric_a_max": a_max})
+            metric.enforce_spd(restrict_sizes=False, restrict_anisotropy=True)
+        if boundary_tag is None:
+            expected = uniform_metric(mesh, a=10.0)
+        else:
+            expected = RiemannianMetric(P1_ten).interpolate(as_matrix(M))
+            expected.dat.data[DirichletBC(P1_ten, 0, 1).nodes] = 10.0 * np.eye(dim)
         self.assertAlmostMatching(metric, expected)
 
 
