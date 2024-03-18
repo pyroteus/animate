@@ -1,11 +1,17 @@
 import abc
 from firedrake.cython.dmcommon import to_petsc_local_numbering
+import firedrake.checkpointing as fchk
 import firedrake.functionspace as ffs
 import firedrake.mesh as fmesh
 from firedrake.petsc import PETSc
 from firedrake.projection import Projector
 import firedrake.utils as futils
+from firedrake import COMM_SELF, COMM_WORLD
+from .checkpointing import load_checkpoint, save_checkpoint
 from .metric import RiemannianMetric
+from .utility import get_checkpoint_dir
+import os
+import time
 
 __all__ = ["MetricBasedAdaptor", "adapt"]
 
@@ -15,14 +21,27 @@ class AdaptorBase(abc.ABC):
     Abstract base class that defines the API for all mesh adaptors.
     """
 
-    def __init__(self, mesh):
+    def __init__(self, mesh, name=None, comm=None):
         """
-        :param mesh: mesh to be adapted
+        :arg mesh: mesh to be adapted
+        :type mesh: :class:`firedrake.mesh.MeshGeometry`
+        :kwarg name: name for the adapted mesh
+        :type name: :class:`str`
+        :kwarg comm: MPI communicator to use for the adapted mesh
+        :type comm: :class:`mpi4py.MPI.Intracom`
         """
         self.mesh = mesh
+        self.name = name or mesh.name
+        self.comm = comm or mesh.comm
 
     @abc.abstractmethod
     def adapted_mesh(self):
+        """
+        Adapt the mesh.
+
+        :returns: the adapted mesh
+        :rtype: :class:`firedrake.mesh.MeshGeometry`
+        """
         pass
 
     @abc.abstractmethod
@@ -30,7 +49,10 @@ class AdaptorBase(abc.ABC):
         """
         Interpolate a field from the initial mesh to the adapted mesh.
 
-        :param f: the field to be interpolated
+        :arg f: a Function on the initial mesh
+        :type f: :class:`firedrake.function.Function`
+        :returns: its interpolation onto the adapted mesh
+        :rtype: :class:`firedrake.function.Function`
         """
         pass
 
@@ -41,11 +63,16 @@ class MetricBasedAdaptor(AdaptorBase):
     """
 
     @PETSc.Log.EventDecorator()
-    def __init__(self, mesh, metric, name=None):
+    def __init__(self, mesh, metric, name=None, comm=None):
         """
-        :param mesh: :class:`~firedrake.mesh.MeshGeometry` to be adapted
-        :param metric: :class:`.RiemannianMetric` to use for the adaptation
-        :param name: name for the adapted mesh
+        :arg mesh: mesh to be adapted
+        :type mesh: :class:`firedrake.mesh.MeshGeometry`
+        :arg metric: metric to use for the adaptation
+        :type metric: :class:`animate.metric.RiemannianMetric`
+        :kwarg name: name for the adapted mesh
+        :type name: :class:`str`
+        :kwarg comm: MPI communicator for handling the checkpoint file
+        :type comm: :class:`mpi4py.MPI.Intracom`
         """
         if metric._mesh is not mesh:
             raise ValueError("The mesh associated with the metric is inconsistent")
@@ -55,12 +82,9 @@ class MetricBasedAdaptor(AdaptorBase):
         if (coord_fe.family(), coord_fe.degree()) != ("Lagrange", 1):
             raise NotImplementedError(f"Mesh coordinates must be P1, not {coord_fe}")
         assert isinstance(metric, RiemannianMetric)
-        super().__init__(mesh)
+        super().__init__(mesh, name=name, comm=comm)
         self.metric = metric
         self.projectors = []
-        if name is None:
-            name = mesh.name
-        self.name = name
 
     @futils.cached_property
     @PETSc.Log.EventDecorator()
@@ -68,7 +92,8 @@ class MetricBasedAdaptor(AdaptorBase):
         """
         Adapt the mesh with respect to the provided metric.
 
-        :return: a new :class:`~firedrake.mesh.MeshGeometry`.
+        :returns: the adapted mesh
+        :rtype: :class:`firedrake.mesh.MeshGeometry`
         """
         self.metric.enforce_spd(restrict_sizes=True, restrict_anisotropy=True)
         size = self.metric.dat.dataset.layout_vec.getSizes()
@@ -82,17 +107,22 @@ class MetricBasedAdaptor(AdaptorBase):
         newplex.setName(fmesh._generate_default_mesh_topology_name(self.name))
         reordered.destroy()
         return fmesh.Mesh(
-            newplex, distribution_parameters={"partition": False}, name=self.name
+            newplex,
+            distribution_parameters={"partition": False},
+            name=self.name,
+            comm=self.comm,
         )
 
     @PETSc.Log.EventDecorator()
     def project(self, f):
         """
-        Project a :class:`.Function` into the corresponding :class:`.FunctionSpace`
-        defined on the adapted mesh using supermeshing.
+        Project a Function into the corresponding FunctionSpace defined on the adapted
+        mesh using conservative projection.
 
-        :param: the scalar :class:`.Function` on the initial mesh
-        :return: its projection onto the adapted mesh
+        :arg f: a Function on the initial mesh
+        :type f: :class:`firedrake.function.Function`
+        :returns: its projection onto the adapted mesh
+        :rtype: :class:`firedrake.function.Function`
         """
         fs = f.function_space()
         for projector in self.projectors:
@@ -111,27 +141,86 @@ class MetricBasedAdaptor(AdaptorBase):
         Interpolate a :class:`.Function` into the corresponding :class:`.FunctionSpace`
         defined on the adapted mesh.
 
-        :param: the scalar :class:`.Function` on the initial mesh
-        :return: its interpolation onto the adapted mesh
+        :arg f: a Function on the initial mesh
+        :type f: :class:`firedrake.function.Function`
+        :returns: its interpolation onto the adapted mesh
+        :rtype: :class:`firedrake.function.Function`
         """
         raise NotImplementedError(
             "Consistent interpolation has not yet been implemented in parallel"
         )  # TODO
 
 
-def adapt(mesh, *metrics, name=None):
+def adapt(mesh, *metrics, name=None, serialise=False, remove_checkpoints=True):
     r"""
     Adapt a mesh with respect to a metric and some adaptor parameters.
 
     If multiple metrics are provided, then they are intersected.
 
-    :param mesh: :class:`~firedrake.mesh.MeshGeometry` to be adapted.
-    :param metrics: list of :class:`.RiemannianMetric`\s
-    :param name: name for the adapted mesh
-    :return: a new :class:`~firedrake.mesh.MeshGeometry`.
+    :arg mesh: mesh to be adapted.
+    :type mesh: :class:`firedrake.mesh.MeshGeometry`
+    :arg metrics: metrics to guide the mesh adaptation
+    :type metrics: :class:`list` of :class:`.RiemannianMetric`\s
+    :kwarg name: name for the adapted mesh
+    :type name: :class:`str`
+    :kwarg serialise: if ``True``, adaptation is done in serial
+    :type serialise: :class:`bool`
+    :kwarg remove_checkpoints: if ``True``, checkpoint files are deleted after use
+    :type remove_checkpoints: :class:`bool`
+    :returns: the adapted mesh
+    :rtype: :class:`~firedrake.mesh.MeshGeometry`
     """
+    nprocs = COMM_WORLD.size
+
+    # Parallel adaptation is currently only supported in 3D
+    if mesh.topological_dimension() != 3:
+        serialise = nprocs > 1
+
+    # If already running in serial then no need to use checkpointing
+    if nprocs == 1:
+        serialise = False
+
+    # Combine metrics by intersection, if multiple are passed
     metric = metrics[0]
     if len(metrics) > 1:
         metric.intersect(*metrics[1:])
-    adaptor = MetricBasedAdaptor(mesh, metric, name=name)
-    return adaptor.adapted_mesh
+
+    if serialise:
+        # In parallel, save input mesh and metric to a checkpoint file
+        checkpoint_dir = get_checkpoint_dir()
+        metric_name = "tmp_metric"
+        metric_fname = "metric_checkpoint"
+        input_fname = os.path.join(checkpoint_dir, metric_fname + ".h5")
+        output_fname = os.path.join(checkpoint_dir, "adapted_mesh_checkpoint.h5")
+        save_checkpoint(metric_fname, metric, metric_name)
+
+        # In serial, load the checkpoint, adapt and write out the result
+        saved = False
+        if COMM_WORLD.rank == 0:
+            metric0 = load_checkpoint(
+                metric_fname, mesh.name, metric_name, comm=COMM_SELF
+            )
+            adaptor0 = MetricBasedAdaptor(metric0._mesh, metric0, name=name)
+            with fchk.CheckpointFile(output_fname, "w", comm=COMM_SELF) as chk:
+                chk.save_mesh(adaptor0.adapted_mesh)
+            saved = True
+            saved = COMM_WORLD.bcast(saved, root=0)
+        else:
+            # This acts like COMM_WORLD.barrier()
+            while not saved:
+                saved = COMM_WORLD.bcast(saved, root=0)
+                time.sleep(1e-3)
+
+        # In parallel, load from the checkpoint
+        if not os.path.exists(output_fname):
+            raise Exception(f"Adapted mesh file does not exist! Path: {output_fname}.")
+        with fchk.CheckpointFile(output_fname, "r") as chk:
+            newmesh = chk.load_mesh(name or fmesh.DEFAULT_MESH_NAME)
+
+        # Delete temporary checkpoint files
+        if remove_checkpoints and COMM_WORLD.rank == 0:
+            os.remove(input_fname)
+            os.remove(output_fname)
+    else:
+        newmesh = MetricBasedAdaptor(mesh, metric, name=name).adapted_mesh
+    return newmesh

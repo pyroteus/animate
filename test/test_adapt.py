@@ -1,4 +1,5 @@
 from test_setup import *
+from firedrake import COMM_WORLD
 from petsc4py import PETSc
 import pytest
 import numpy as np
@@ -16,7 +17,7 @@ def load_mesh(fname):
     return Mesh(os.path.join(mesh_dir, fname + ".msh"))
 
 
-def try_adapt(mesh, metric):
+def try_adapt(mesh, metric, **kwargs):
     """
     Attempt to invoke PETSc's mesh adaptation functionality
     and xfail if it is not installed.
@@ -26,7 +27,7 @@ def try_adapt(mesh, metric):
     :return: the adapted mesh w.r.t. the metric
     """
     try:
-        return adapt(mesh, metric)
+        return adapt(mesh, metric, **kwargs)
     except PETSc.Error as exc:
         if exc.ierr == 63:
             pytest.xfail("No mesh adaptation tools are installed")
@@ -39,10 +40,14 @@ def dim(request):
     return request.param
 
 
-def test_no_adapt(dim):
+@pytest.fixture(params=[True, False])
+def serialise(request):
+    return request.param
+
+
+def test_no_adapt(dim, **kwargs):
     """
-    Test that we can turn off all of Mmg's
-    mesh adaptation operations.
+    Test that we can turn off mesh adaptation operations.
     """
     mesh = uniform_mesh(dim)
     dofs = mesh.coordinates.vector().gather().shape
@@ -55,17 +60,26 @@ def test_no_adapt(dim):
         }
     }
     metric = uniform_metric(mesh, metric_parameters=mp)
-    newmesh = try_adapt(mesh, metric)
+    newmesh = try_adapt(mesh, metric, **kwargs)
     assert newmesh.coordinates.vector().gather().shape == dofs
 
 
 @pytest.mark.parallel(nprocs=2)
-def test_no_adapt_parallel():
+def test_no_adapt_2d_parallel():
     """
-    Test that we can turn off all of ParMmg's
-    mesh adaptation operations.
+    Test that we can turn off mesh adaptation operations in 2D.
     """
-    test_no_adapt(3)
+    assert COMM_WORLD.size == 2
+    test_no_adapt(2, serialise=True)
+
+
+@pytest.mark.parallel(nprocs=2)
+def test_no_adapt_3d_parallel(serialise):
+    """
+    Test that we can turn off mesh adaptation operations in 3D.
+    """
+    assert COMM_WORLD.size == 2
+    test_no_adapt(3, serialise=serialise)
 
 
 @pytest.mark.parametrize(
@@ -124,7 +138,7 @@ def test_preserve_facet_tags_2d(meshname):
         assert np.isclose(bnd, newbnd), f"Length of arc {tag} not preserved"
 
 
-def test_adapt_3d():
+def test_adapt_3d(**kwargs):
     """
     Test that we can successfully invoke
     Mmg3d and that it changes the DoF count.
@@ -138,26 +152,38 @@ def test_adapt_3d():
         }
     }
     metric = uniform_metric(mesh, metric_parameters=mp)
-    newmesh = try_adapt(mesh, metric)
+    newmesh = try_adapt(mesh, metric, **kwargs)
     assert newmesh.coordinates.vector().gather().shape != dofs
 
 
 @pytest.mark.parallel(nprocs=2)
-def test_adapt_parallel_3d_np2():
+def test_adapt_parallel_2d_np2(serialise):
     """
-    Test that we can successfully invoke ParMmg with 2 MPI processes and that
+    Test that we can successfully invoke Mmg for a 2D run with 2 MPI processes and that
     it changes the DoF count.
     """
-    test_adapt_3d()
+    assert COMM_WORLD.size == 2
+    test_adapt_3d(serialise=True)
+
+
+@pytest.mark.parallel(nprocs=2)
+def test_adapt_parallel_3d_np2(serialise):
+    """
+    Test that we can successfully invoke [Par]Mmg for a 3D run with 2 MPI processes and
+    that it changes the DoF count.
+    """
+    assert COMM_WORLD.size == 2
+    test_adapt_3d(serialise=serialise)
 
 
 @pytest.mark.parallel(nprocs=3)
-def test_adapt_parallel_3d_np3():
+def test_adapt_parallel_3d_np3(serialise):
     """
-    Test that we can successfully invoke ParMmg with 3 MPI processes and that
-    it changes the DoF count.
+    Test that we can successfully invoke [Par]Mmg for a 3D run with 3 MPI processes and
+    that it changes the DoF count.
     """
-    test_adapt_3d()
+    assert COMM_WORLD.size == 3
+    test_adapt_3d(serialise=serialise)
 
 
 def test_enforce_spd_h_min(dim):
@@ -188,3 +214,7 @@ def test_enforce_spd_h_max(dim):
     metric.enforce_spd(restrict_sizes=True)
     newmesh = try_adapt(mesh, metric)
     assert newmesh.coordinates.vector().gather().shape[0] > num_vertices
+
+
+if __name__ == "__main__":
+    test_no_adapt_2d_parallel()
